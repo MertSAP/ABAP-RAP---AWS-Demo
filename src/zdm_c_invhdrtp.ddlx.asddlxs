@@ -170,6 +170,12 @@ annotate view ZDM_C_INVHDRTP with
   } ]
   TmpAttachment;
 
+ @UI.fieldGroup: [ {
+   position: 20 ,
+   label: 'Stored Attachment',
+    qualifier: 'Attachments'
+  } ]
+  Attachment;
  @UI.fieldGroup: [{ qualifier: 'Costs', position: 30, label: 'Sub Total'}]
   Subtotal;
 

@@ -2,8 +2,7 @@ CLASS lsc_zdm_r_invhdrtp DEFINITION INHERITING FROM cl_abap_behavior_saver.
 
   PROTECTED SECTION.
     METHODS adjust_numbers REDEFINITION.
-
-
+    METHODS save_modified REDEFINITION.
 ENDCLASS.
 
 CLASS lsc_zdm_r_invhdrtp IMPLEMENTATION.
@@ -13,19 +12,33 @@ CLASS lsc_zdm_r_invhdrtp IMPLEMENTATION.
   METHOD adjust_numbers.
     IF mapped-invoiceitem IS NOT INITIAL.
 
-          DATA: max_item_id TYPE i VALUE 0.
+      DATA: max_item_id TYPE i VALUE 0.
 
-          LOOP AT mapped-invoiceitem  ASSIGNING FIELD-SYMBOL(<item>).
-            <item>-InvoiceID = <item>-%tmp-InvoiceID.
-            IF max_item_id EQ 0.
-              SELECT MAX( item_num ) FROM zdm_ainvitm WHERE invoice_id = @<item>-InvoiceID INTO @max_item_id .
-            ENDIF.
+      LOOP AT mapped-invoiceitem  ASSIGNING FIELD-SYMBOL(<item>).
+        <item>-InvoiceID = <item>-%tmp-InvoiceID.
+        IF max_item_id EQ 0.
+          SELECT MAX( item_num ) FROM zdm_ainvitm WHERE invoice_id = @<item>-InvoiceID INTO @max_item_id .
+        ENDIF.
 
-            max_item_id += 1.
-            <item>-ItemNum = max_item_id.
+        max_item_id += 1.
+        <item>-ItemNum = max_item_id.
 
-          ENDLOOP.
-    endif.
+      ENDLOOP.
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD save_modified.
+    IF delete-invoice IS NOT INITIAL.
+
+      LOOP AT delete-invoice INTO DATA(invoice).
+        SELECT SINGLE FileName INTO @DATA(lv_filename) FROM zdm_ainvhdr WHERE invoice_id = @invoice-InvoiceID.
+        IF lv_filename IS NOT INITIAL.
+          DATA(storage_helper) = NEW zdm_cl_aws_invoice_storage(  invoice-InvoiceID ).
+          storage_helper->delete_object( iv_filename = lv_filename ).
+        ENDIF.
+      ENDLOOP.
+
+    ENDIF.
   ENDMETHOD.
 
 ENDCLASS.
@@ -44,6 +57,8 @@ CLASS lhc_Invoice DEFINITION INHERITING FROM cl_abap_behavior_handler.
 
     METHODS rejectinvoice FOR MODIFY
       IMPORTING keys FOR ACTION invoice~rejectinvoice RESULT result.
+    METHODS uploadtos3 FOR DETERMINE ON SAVE
+      IMPORTING keys FOR invoice~uploadtos3.
     METHODS earlynumbering_create FOR NUMBERING
       IMPORTING entities FOR CREATE invoice.
     CONSTANTS:
@@ -201,6 +216,67 @@ CLASS lhc_Invoice IMPLEMENTATION.
     ENDLOOP.
 
 
+  ENDMETHOD.
+
+  METHOD uploadToS3.
+    DATA: s3_successfull    TYPE abap_bool.
+
+    READ ENTITIES OF zdm_r_invhdrtp IN LOCAL MODE
+    ENTITY Invoice ALL FIELDS WITH CORRESPONDING #(  keys )
+    RESULT FINAL(lt_invoices_entity).
+
+
+    LOOP AT lt_invoices_entity INTO DATA(invoice_entity).
+      IF invoice_entity-TmpAttachment IS  INITIAL.
+        CONTINUE.
+      ENDIF.
+
+      DATA(storage_helper) = NEW zdm_cl_aws_invoice_storage(  invoice_entity-InvoiceID ).
+
+      TRY.
+          s3_successfull = abap_true.
+          storage_helper->put_object( iv_filename     = invoice_entity-TmpFilename
+                                      iv_old_filename = invoice_entity-Filename
+                                      iv_body         = invoice_entity-TmpAttachment ).
+        CATCH cx_root.
+
+          INSERT VALUE #(  %tky   =  invoice_entity-%tky
+                 %element-TmpAttachment =  if_abap_behv=>mk-on
+                  %msg        = me->new_message_with_text(  severity = if_abap_behv_message=>severity-error
+                                                           text     = 'Unable to store attachment' ) ) INTO TABLE reported-invoice.
+          s3_successfull = abap_false.
+      ENDTRY.
+
+      IF s3_successfull EQ abap_true.
+        invoice_entity-Filename = storage_helper->get_filename( invoice_entity-TmpFilename ).
+        invoice_entity-MimeType = invoice_entity-TmpMimetype.
+      ELSE.
+        CLEAR invoice_entity-Filename.
+        CLEAR invoice_entity-MimeType.
+      ENDIF.
+
+      CLEAR invoice_entity-TmpAttachment.
+      CLEAR invoice_entity-TmpFilename.
+      CLEAR invoice_entity-TmpMimetype.
+
+
+
+
+      MODIFY ENTITIES OF zdm_r_invhdrtp IN LOCAL MODE
+      ENTITY Invoice
+      UPDATE FIELDS ( TmpAttachment TmpFilename TmpMimetype Filename Mimetype )
+        WITH VALUE #( ( %key   =  invoice_entity-%key
+                  %is_draft     = invoice_entity-%is_draft
+                  TmpAttachment = invoice_entity-TmpAttachment
+                  TmpFilename = invoice_entity-TmpFilename
+                  TmpMimetype = invoice_entity-TmpMimetype
+                  Filename = invoice_entity-Filename
+                  MimeType =  invoice_entity-MimeType
+                  ) )
+                  FAILED DATA(failed_update)
+                  REPORTED DATA(reported_update).
+
+    ENDLOOP.
   ENDMETHOD.
 
 ENDCLASS.

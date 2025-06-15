@@ -9,6 +9,7 @@ etag master LocalLastChangedAt
 lock master total etag LastChangedAt
 authorization master( global )
 early numbering
+with additional save with full data
 {
 
   field ( readonly )
@@ -29,6 +30,7 @@ early numbering
    ExtInvoiceID;
 
   determination setStatusOnDraftCreate on save { create; }
+  determination uploadToS3 on save { create; update; }
 
   action ( features : instance ) approveInvoice result [1] $self;
   action ( features : instance ) rejectInvoice result [1] $self;
