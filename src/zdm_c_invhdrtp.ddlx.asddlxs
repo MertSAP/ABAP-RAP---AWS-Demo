@@ -164,13 +164,12 @@ annotate view ZDM_C_INVHDRTP with
   VendorTaxNumber;
   
    @UI.fieldGroup: [ {
-   position: 120 ,
-   label: 'Attachment',
+   position: 10 ,
+   label: 'Local Attachment',
     qualifier: 'Attachments'
   } ]
   TmpAttachment;
 
-  
  @UI.fieldGroup: [{ qualifier: 'Costs', position: 30, label: 'Sub Total'}]
   Subtotal;
 

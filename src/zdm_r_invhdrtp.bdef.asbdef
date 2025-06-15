@@ -7,9 +7,8 @@ persistent table zdm_ainvhdr
 draft table ZDM_DINVHDR
 etag master LocalLastChangedAt
 lock master total etag LastChangedAt
-late numbering
 authorization master( global )
-
+early numbering
 {
 
   field ( readonly )
@@ -81,8 +80,8 @@ persistent table zdm_ainvitm
 draft table zdm_dinvitm
 etag master LocalLastChangedAt
 lock dependent by _Invoice
-authorization dependent by _Invoice
 late numbering
+authorization dependent by _Invoice
 {
   field ( readonly )
   InvoiceID,

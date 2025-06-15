@@ -1,65 +1,31 @@
 CLASS lsc_zdm_r_invhdrtp DEFINITION INHERITING FROM cl_abap_behavior_saver.
 
   PROTECTED SECTION.
-
     METHODS adjust_numbers REDEFINITION.
+
 
 ENDCLASS.
 
 CLASS lsc_zdm_r_invhdrtp IMPLEMENTATION.
 
+
+
   METHOD adjust_numbers.
-    DATA: invoice_id_max TYPE zdm_int_invnum.
-    IF mapped-invoice IS NOT INITIAL.
-      TRY.
-          "get numbers
-          cl_numberrange_runtime=>number_get(
-            EXPORTING
-              nr_range_nr       = '01'
-              object            = 'ZDM_INVNUM'
-              quantity          = CONV #( lines( mapped-invoice ) )
-            IMPORTING
-              number            = DATA(number_range_key)
-              returncode        = DATA(number_range_return_code)
-              returned_quantity = DATA(number_range_returned_quantity)
-          ).
-        CATCH cx_number_ranges INTO DATA(lx_number_ranges).
-          RAISE SHORTDUMP TYPE cx_number_ranges
-            EXPORTING
-              previous = lx_number_ranges.
-      ENDTRY.
-
-      ASSERT number_range_returned_quantity = lines( mapped-invoice ).
-      invoice_id_max = number_range_key - number_range_returned_quantity.
-      LOOP AT mapped-invoice ASSIGNING FIELD-SYMBOL(<invoice>).
-        invoice_id_max += 1.
-        <invoice>-InvoiceID = invoice_id_max.
-      ENDLOOP.
-    ENDIF.
-
     IF mapped-invoiceitem IS NOT INITIAL.
-      READ ENTITIES OF zdm_r_invhdrtp IN LOCAL MODE
-        ENTITY InvoiceItem BY \_Invoice
-          FROM VALUE #( FOR invoiceitem IN mapped-invoiceitem WHERE ( %tmp-InvoiceID IS INITIAL )
-                                                            ( %pid = invoiceitem-%pid
-                                                              %key = invoiceitem-%tmp ) )
-        LINK DATA(lineitem_to_invoice_links).
 
-      LOOP AT mapped-invoiceitem ASSIGNING FIELD-SYMBOL(<invoiceitem>).
-        <invoiceitem>-InvoiceID =
-          COND #( WHEN <invoiceitem>-%tmp-InvoiceID IS INITIAL
-                  THEN mapped-invoice[ %pid = lineitem_to_invoice_links[ source-%pid = <invoiceitem>-%pid ]-target-%pid ]-InvoiceID
-                  ELSE <invoiceitem>-%tmp-InvoiceID ).
-      ENDLOOP.
+          DATA: max_item_id TYPE i VALUE 0.
 
-      LOOP AT mapped-invoiceitem INTO DATA(mapped_invoiceitem) GROUP BY mapped_invoiceitem-InvoiceID.
-        SELECT MAX( booking_id ) FROM zrap110_abookSOL WHERE travel_id = @mapped_invoiceitem-InvoiceID INTO @DATA(max_lineitem_id) .
-        LOOP AT GROUP mapped_invoiceitem ASSIGNING <invoiceitem>.
-          max_lineitem_id += 1.
-          <invoiceitem>-ItemNum = max_lineitem_id.
-        ENDLOOP.
-      ENDLOOP.
-    ENDIF.
+          LOOP AT mapped-invoiceitem  ASSIGNING FIELD-SYMBOL(<item>).
+            <item>-InvoiceID = <item>-%tmp-InvoiceID.
+            IF max_item_id EQ 0.
+              SELECT MAX( item_num ) FROM zdm_ainvitm WHERE invoice_id = @<item>-InvoiceID INTO @max_item_id .
+            ENDIF.
+
+            max_item_id += 1.
+            <item>-ItemNum = max_item_id.
+
+          ENDLOOP.
+    endif.
   ENDMETHOD.
 
 ENDCLASS.
@@ -78,13 +44,15 @@ CLASS lhc_Invoice DEFINITION INHERITING FROM cl_abap_behavior_handler.
 
     METHODS rejectinvoice FOR MODIFY
       IMPORTING keys FOR ACTION invoice~rejectinvoice RESULT result.
+    METHODS earlynumbering_create FOR NUMBERING
+      IMPORTING entities FOR CREATE invoice.
     CONSTANTS:
       "travel status
       BEGIN OF invoice_status,
-        notsubmitted  TYPE c LENGTH 1 VALUE '', "Not Submitted
-        open     TYPE c LENGTH 1 VALUE 'O', "Open
-        approved TYPE c LENGTH 1 VALUE 'A', "Approved
-        rejected TYPE c LENGTH 1 VALUE 'R', "Rejected
+        notsubmitted TYPE c LENGTH 1 VALUE '', "Not Submitted
+        open         TYPE c LENGTH 1 VALUE 'O', "Open
+        approved     TYPE c LENGTH 1 VALUE 'A', "Approved
+        rejected     TYPE c LENGTH 1 VALUE 'R', "Rejected
       END OF invoice_status.
 ENDCLASS.
 
@@ -178,6 +146,61 @@ CLASS lhc_Invoice IMPLEMENTATION.
        RESULT DATA(invoices).
 
     result = VALUE #( FOR invoice IN invoices ( %tky = invoice-%tky  %param = invoice ) ).
+  ENDMETHOD.
+
+  METHOD earlynumbering_create.
+    DATA: invoice_id_max TYPE zdm_int_invnum.
+
+    " Ensure Travel ID is not set yet (idempotent)- must be checked when BO is draft-enabled
+    LOOP AT entities INTO DATA(invoice) WHERE InvoiceID IS NOT INITIAL.
+      APPEND CORRESPONDING #( invoice ) TO mapped-invoice.
+    ENDLOOP.
+
+    DATA(entities_wo_InvoiceID) = entities.
+    DELETE entities_wo_InvoiceID WHERE InvoiceID IS NOT INITIAL.
+
+    " Get Numbers
+    TRY.
+        cl_numberrange_runtime=>number_get(
+          EXPORTING
+            nr_range_nr       = '01'
+            object            = 'ZDM_INVNUM'
+            quantity          = CONV #( lines( entities_wo_InvoiceID ) )
+          IMPORTING
+            number            = DATA(number_range_key)
+            returncode        = DATA(number_range_return_code)
+            returned_quantity = DATA(number_range_returned_quantity)
+        ).
+      CATCH cx_number_ranges INTO DATA(lx_number_ranges).
+        LOOP AT entities_wo_InvoiceID INTO invoice.
+          APPEND VALUE #(  %cid = invoice-%cid
+                           %key = invoice-%key
+                           %msg = lx_number_ranges
+                        ) TO reported-invoice.
+          APPEND VALUE #(  %cid = invoice-%cid
+                           %key = invoice-%key
+                        ) TO failed-invoice.
+        ENDLOOP.
+        EXIT.
+    ENDTRY.
+
+
+    " At this point ALL entities get a number!entities_wo_InvoiceID
+    ASSERT number_range_returned_quantity = lines( entities_wo_InvoiceID ).
+
+    invoice_id_max = number_range_key - number_range_returned_quantity.
+
+    " Set Travel ID
+    LOOP AT entities ASSIGNING FIELD-SYMBOL(<ls_entity>).
+      invoice_id_max += 1.
+
+      APPEND VALUE #( %cid  = <ls_entity>-%cid
+                      %is_draft = <ls_entity>-%is_draft
+                     InvoiceID = invoice_id_max
+                    ) TO mapped-invoice.
+    ENDLOOP.
+
+
   ENDMETHOD.
 
 ENDCLASS.
