@@ -1,7 +1,7 @@
 projection;
 strict ( 2 );
 use draft;
-
+use side effects;
 define behavior for ZDM_C_INVHDRTP alias Invoice
 use etag
 

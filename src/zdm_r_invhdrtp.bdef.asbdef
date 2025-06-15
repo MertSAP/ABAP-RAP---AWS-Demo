@@ -29,6 +29,13 @@ with additional save with full data
    PoNum,
    ExtInvoiceID;
 
+ side effects
+  {
+    field TmpAttachment affects field Filename, field Mimetype, field TmpFilename, field VendorName, field VendorAddress, field InvoiceReceiptDate, field Total, field Tax, field AmountDue, field Subtotal,
+    field VendorTaxNumber, field DueDate, field PONum, field ExtInvoiceID, entity _InvoiceItems;
+  }
+
+  determination populateFieldsFromAttachment on modify { field TmpAttachment; }
   determination setStatusOnDraftCreate on save { create; }
   determination uploadToS3 on save { create; update; }
 
