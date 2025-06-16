@@ -68,6 +68,7 @@ CLASS lhc_Invoice DEFINITION INHERITING FROM cl_abap_behavior_handler.
                                           iv_invoice   TYPE zdm_c_invhdrtp
                                 EXPORTING et_lineitems TYPE zdm_tt_aws_extract
                                           es_invoice   TYPE zdm_c_invhdrtp.
+
     CONSTANTS:
       "travel status
       BEGIN OF invoice_status,
@@ -75,7 +76,11 @@ CLASS lhc_Invoice DEFINITION INHERITING FROM cl_abap_behavior_handler.
         open         TYPE c LENGTH 1 VALUE 'O', "Open
         approved     TYPE c LENGTH 1 VALUE 'A', "Approved
         rejected     TYPE c LENGTH 1 VALUE 'R', "Rejected
-      END OF invoice_status.
+      END OF invoice_status,
+      BEGIN OF tags,
+        approved TYPE string VALUE 'APPROVED',
+        rejected TYPE string VALUE 'REJECTED',
+      END OF tags.
 ENDCLASS.
 
 CLASS lhc_Invoice IMPLEMENTATION.
@@ -93,24 +98,24 @@ CLASS lhc_Invoice IMPLEMENTATION.
 
     " evaluate the conditions, set the operation state, and set result parameter
     result = VALUE #( FOR invoice IN invoices
-                       ( %tky                   = invoice-%tky
+                      ( %tky                   = invoice-%tky
 
                    "     %features-%update      = COND #( WHEN invoice-Status <> ''
                                                        "   THEN if_abap_behv=>fc-o-disabled ELSE if_abap_behv=>fc-o-enabled   )
 
                         %features-%delete      = COND #( WHEN invoice-Status = invoice_status-open
-                                                          THEN if_abap_behv=>fc-o-enabled ELSE if_abap_behv=>fc-o-disabled   )
+                                                         THEN if_abap_behv=>fc-o-enabled ELSE if_abap_behv=>fc-o-disabled )
 
-                         %action-Edit           =  COND #( WHEN invoice-Status <> invoice_status-notsubmitted
-                                                          THEN if_abap_behv=>fc-o-disabled ELSE if_abap_behv=>fc-o-enabled   )
+                        %action-Edit           = COND #( WHEN invoice-Status <> invoice_status-notsubmitted
+                                                         THEN if_abap_behv=>fc-o-disabled ELSE if_abap_behv=>fc-o-enabled )
 
 
-                         %action-approveInvoice   = COND #( WHEN invoice-Status EQ 'O'
-                                                              THEN if_abap_behv=>fc-o-enabled ELSE if_abap_behv=>fc-o-disabled   )
+                        %action-approveInvoice = COND #( WHEN invoice-Status EQ 'O'
+                                                         THEN if_abap_behv=>fc-o-enabled ELSE if_abap_behv=>fc-o-disabled )
 
-                         %action-rejectInvoice   = COND #( WHEN invoice-Status EQ 'O'
-                                                              THEN if_abap_behv=>fc-o-enabled ELSE if_abap_behv=>fc-o-disabled   )
-                      ) ).
+                        %action-rejectInvoice  = COND #( WHEN invoice-Status EQ 'O'
+                                                         THEN if_abap_behv=>fc-o-enabled ELSE if_abap_behv=>fc-o-disabled )
+                    ) ).
 
 
   ENDMETHOD.
@@ -131,19 +136,31 @@ CLASS lhc_Invoice IMPLEMENTATION.
       ENTITY Invoice
         UPDATE FIELDS ( Status )
         WITH VALUE #( FOR invoice IN invoices INDEX INTO i (
-                           %tky      = invoice-%tky
-                           Status  =  invoice_status-open ) ).
+                      %tky   = invoice-%tky
+                      Status = invoice_status-open ) ).
 
   ENDMETHOD.
 
   METHOD approveInvoice.
+
+    READ ENTITIES OF zdm_r_invhdrtp IN LOCAL MODE
+   ENTITY Invoice ALL FIELDS WITH CORRESPONDING #(  keys )
+   RESULT FINAL(lt_invoices_entity).
+
     MODIFY ENTITIES OF zdm_r_invhdrtp IN LOCAL MODE
           ENTITY Invoice
              UPDATE FIELDS ( Status )
-                WITH VALUE #( FOR key IN keys ( %tky         = key-%tky
+                WITH VALUE #( FOR key IN keys ( %tky   = key-%tky
                                                 Status = invoice_status-approved ) ). " 'A' Approved
 
+    LOOP AT lt_invoices_entity INTO DATA(invoice_entity).
+      DATA(storage_helper) = NEW zdm_cl_aws_invoice_storage(  invoice_entity-InvoiceID ).
 
+      TRY.
+          storage_helper->add_status_tag( iv_filename = invoice_entity-Filename iv_tag = tags-approved ).
+        CATCH cx_root.
+      ENDTRY.
+    ENDLOOP.
 
     " read changed data for result
     READ ENTITIES OF zdm_r_invhdrtp IN LOCAL MODE
@@ -156,11 +173,25 @@ CLASS lhc_Invoice IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD rejectInvoice.
+
+    READ ENTITIES OF zdm_r_invhdrtp IN LOCAL MODE
+    ENTITY Invoice ALL FIELDS WITH CORRESPONDING #(  keys )
+    RESULT FINAL(lt_invoices_entity).
+
     MODIFY ENTITIES OF zdm_r_invhdrtp IN LOCAL MODE
           ENTITY Invoice
              UPDATE FIELDS ( Status )
-                WITH VALUE #( FOR key IN keys ( %tky         = key-%tky
+                WITH VALUE #( FOR key IN keys ( %tky   = key-%tky
                                                 Status = invoice_status-rejected ) ). " 'A' Approved
+
+    LOOP AT lt_invoices_entity INTO DATA(invoice_entity).
+      DATA(storage_helper) = NEW zdm_cl_aws_invoice_storage(  invoice_entity-InvoiceID ).
+
+      TRY.
+          storage_helper->add_status_tag( iv_filename = invoice_entity-Filename iv_tag = tags-rejected ).
+        CATCH cx_root.
+      ENDTRY.
+    ENDLOOP.
 
     " read changed data for result
     READ ENTITIES OF zdm_r_invhdrtp IN LOCAL MODE
@@ -197,12 +228,12 @@ CLASS lhc_Invoice IMPLEMENTATION.
         ).
       CATCH cx_number_ranges INTO DATA(lx_number_ranges).
         LOOP AT entities_wo_InvoiceID INTO invoice.
-          APPEND VALUE #(  %cid = invoice-%cid
-                           %key = invoice-%key
-                           %msg = lx_number_ranges
+          APPEND VALUE #( %cid = invoice-%cid
+                          %key = invoice-%key
+                          %msg = lx_number_ranges
                         ) TO reported-invoice.
-          APPEND VALUE #(  %cid = invoice-%cid
-                           %key = invoice-%key
+          APPEND VALUE #( %cid = invoice-%cid
+                          %key = invoice-%key
                         ) TO failed-invoice.
         ENDLOOP.
         EXIT.
@@ -218,9 +249,9 @@ CLASS lhc_Invoice IMPLEMENTATION.
     LOOP AT entities ASSIGNING FIELD-SYMBOL(<ls_entity>).
       invoice_id_max += 1.
 
-      APPEND VALUE #( %cid  = <ls_entity>-%cid
+      APPEND VALUE #( %cid      = <ls_entity>-%cid
                       %is_draft = <ls_entity>-%is_draft
-                     InvoiceID = invoice_id_max
+                      InvoiceID = invoice_id_max
                     ) TO mapped-invoice.
     ENDLOOP.
 
@@ -249,10 +280,10 @@ CLASS lhc_Invoice IMPLEMENTATION.
                                       iv_body         = invoice_entity-TmpAttachment ).
         CATCH cx_root.
 
-          INSERT VALUE #(  %tky   =  invoice_entity-%tky
-                 %element-TmpAttachment =  if_abap_behv=>mk-on
-                  %msg        = me->new_message_with_text(  severity = if_abap_behv_message=>severity-error
-                                                           text     = 'Unable to store attachment' ) ) INTO TABLE reported-invoice.
+          INSERT VALUE #( %tky                   = invoice_entity-%tky
+                          %element-TmpAttachment = if_abap_behv=>mk-on
+                          %msg                   = me->new_message_with_text( severity = if_abap_behv_message=>severity-error
+                                                                              text     = 'Unable to store attachment' ) ) INTO TABLE reported-invoice.
           s3_successfull = abap_false.
       ENDTRY.
 
@@ -274,14 +305,14 @@ CLASS lhc_Invoice IMPLEMENTATION.
       MODIFY ENTITIES OF zdm_r_invhdrtp IN LOCAL MODE
       ENTITY Invoice
       UPDATE FIELDS ( TmpAttachment TmpFilename TmpMimetype Filename Mimetype )
-        WITH VALUE #( ( %key   =  invoice_entity-%key
-                  %is_draft     = invoice_entity-%is_draft
-                  TmpAttachment = invoice_entity-TmpAttachment
-                  TmpFilename = invoice_entity-TmpFilename
-                  TmpMimetype = invoice_entity-TmpMimetype
-                  Filename = invoice_entity-Filename
-                  MimeType =  invoice_entity-MimeType
-                  ) )
+        WITH VALUE #( ( %key          = invoice_entity-%key
+                        %is_draft     = invoice_entity-%is_draft
+                        TmpAttachment = invoice_entity-TmpAttachment
+                        TmpFilename   = invoice_entity-TmpFilename
+                        TmpMimetype   = invoice_entity-TmpMimetype
+                        Filename      = invoice_entity-Filename
+                        MimeType      = invoice_entity-MimeType
+                      ) )
                   FAILED DATA(failed_update)
                   REPORTED DATA(reported_update).
 
@@ -304,25 +335,25 @@ CLASS lhc_Invoice IMPLEMENTATION.
       ENDIF.
       DATA: invoice_cp TYPE zdm_c_invhdrtp.
       invoice_cp = CORRESPONDING #(  invoice_entity ) .
-      get_extract_results(  EXPORTING iv_invoice = invoice_cp IMPORTING es_invoice = ls_invoice et_lineitems = lt_items ).
+      get_extract_results( EXPORTING iv_invoice = invoice_cp IMPORTING es_invoice = ls_invoice et_lineitems = lt_items ).
 
       MODIFY ENTITIES OF zdm_r_invhdrtp IN LOCAL MODE
           ENTITY Invoice
           UPDATE FIELDS (  VendorName VendorAddress DueDate InvoiceReceiptDate Total Subtotal Tax AmountDue VendorTaxNumber ExtInvoiceID PONum )
-            WITH VALUE #( ( %key   =  invoice_entity-%key
-                      %is_draft     = invoice_entity-%is_draft
-                      VendorName  =  ls_invoice-VendorName
-                      VendorAddress = ls_invoice-VendorAddress
-                      DueDate = ls_invoice-DueDate
-                      InvoiceReceiptDate = ls_invoice-InvoiceReceiptDate
-                      Total = ls_invoice-Total
-                      Subtotal = ls_invoice-Subtotal
-                      Tax = ls_invoice-Tax
-                      AmountDue = ls_invoice-AmountDue
-                      VendorTaxNumber = ls_invoice-VendorTaxNumber
-                      ExtInvoiceID = ls_invoice-ExtInvoiceID
-                      PONum = ls_invoice-PONum
-                      ) )
+            WITH VALUE #( ( %key               = invoice_entity-%key
+                            %is_draft          = invoice_entity-%is_draft
+                            VendorName         = ls_invoice-VendorName
+                            VendorAddress      = ls_invoice-VendorAddress
+                            DueDate            = ls_invoice-DueDate
+                            InvoiceReceiptDate = ls_invoice-InvoiceReceiptDate
+                            Total              = ls_invoice-Total
+                            Subtotal           = ls_invoice-Subtotal
+                            Tax                = ls_invoice-Tax
+                            AmountDue          = ls_invoice-AmountDue
+                            VendorTaxNumber    = ls_invoice-VendorTaxNumber
+                            ExtInvoiceID       = ls_invoice-ExtInvoiceID
+                            PONum              = ls_invoice-PONum
+                          ) )
                       FAILED DATA(failed_update)
                       REPORTED DATA(reported_update).
 
@@ -331,16 +362,16 @@ CLASS lhc_Invoice IMPLEMENTATION.
       MODIFY ENTITIES OF zdm_r_invhdrtp IN LOCAL MODE ENTITY Invoice CREATE BY \_InvoiceItems AUTO FILL CID
                 FIELDS ( InvoiceID Description ItemNum LinePrice Quantity UnitPrice ) WITH VALUE #( FOR key IN keys (
 
-                             %is_draft = if_abap_behv=>mk-on
-                             %key   =  invoice_entity-%key
-                             %target = VALUE #(
-                              FOR item IN lt_items (
-                              %is_draft = if_abap_behv=>mk-on
-                                InvoiceID = key-InvoiceID
-                                Description = item-description
-                                LinePrice = item-line_price
-                                UnitPrice = item-unit_price
-                                Quantity = item-quantity ) ) ) )
+                                                                                                    %is_draft = if_abap_behv=>mk-on
+                                                                                                    %key      = invoice_entity-%key
+                                                                                                    %target   = VALUE #(
+                                                                                                                       FOR item IN lt_items (
+                                                                                                                       %is_draft   = if_abap_behv=>mk-on
+                                                                                                                       InvoiceID   = key-InvoiceID
+                                                                                                                       Description = item-description
+                                                                                                                       LinePrice   = item-line_price
+                                                                                                                       UnitPrice   = item-unit_price
+                                                                                                                       Quantity    = item-quantity ) ) ) )
            REPORTED DATA(reported1) FAILED DATA(failed1) MAPPED DATA(mapped1).
     ENDLOOP.
   ENDMETHOD.
@@ -351,7 +382,7 @@ CLASS lhc_Invoice IMPLEMENTATION.
     DATA: lt_header_fields TYPE ztt_aws_keyvalue.
     DATA: value TYPE string.
     es_invoice = iv_invoice.
-    o_extract->get_text_from_document( EXPORTING iv_bytes =  iv_invoice-TmpAttachment  ).
+    o_extract->get_text_from_document( EXPORTING iv_bytes = iv_invoice-TmpAttachment ).
 
     et_lineitems = o_extract->get_lineitems(  ).
     es_invoice-VendorAddress = o_extract->get_field( 'VENDOR_ADDRESS' ).

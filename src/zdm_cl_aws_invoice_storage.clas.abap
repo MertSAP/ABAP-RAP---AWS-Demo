@@ -21,7 +21,13 @@ CLASS zdm_cl_aws_invoice_storage DEFINITION
           iv_filename       TYPE zfile_name
         RETURNING
           VALUE(rv_success) TYPE abap_bool.
-
+    METHODS
+      add_status_tag
+        IMPORTING
+          iv_filename       TYPE zfile_name
+          iv_tag            TYPE string
+        RETURNING
+          VALUE(rv_success) TYPE abap_bool.
     METHODS
       put_object
         IMPORTING
@@ -85,4 +91,19 @@ CLASS zdm_cl_aws_invoice_storage IMPLEMENTATION.
     rv_filename = |{ invoice_id }{ cl_file->get_file_extension( ) }|.
   ENDMETHOD.
 
+  METHOD add_status_tag.
+    DATA(lo_tagging) = NEW /aws1/cl_s3_tagging(
+       it_tagset = VALUE /aws1/cl_s3_tag=>tt_tagset(
+         (
+           NEW /aws1/cl_s3_tag(
+             iv_key = |Status|
+             iv_value = iv_tag
+           )
+         )
+       )
+     ).
+    o_s3->putobjecttagging(  iv_bucket = bucket
+                             iv_key    = CONV /aws1/s3_objectkey( iv_filename )
+                             io_tagging  = lo_tagging ).
+  ENDMETHOD.
 ENDCLASS.
