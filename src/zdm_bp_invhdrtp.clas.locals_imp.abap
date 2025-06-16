@@ -61,6 +61,8 @@ CLASS lhc_Invoice DEFINITION INHERITING FROM cl_abap_behavior_handler.
       IMPORTING keys FOR invoice~uploadtos3.
     METHODS populatefieldsfromattachment FOR DETERMINE ON MODIFY
       IMPORTING keys FOR invoice~populatefieldsfromattachment.
+    METHODS checkduplicate FOR VALIDATE ON SAVE
+      IMPORTING keys FOR invoice~checkduplicate.
     METHODS earlynumbering_create FOR NUMBERING
       IMPORTING entities FOR CREATE invoice.
 
@@ -68,6 +70,10 @@ CLASS lhc_Invoice DEFINITION INHERITING FROM cl_abap_behavior_handler.
                                           iv_invoice   TYPE zdm_c_invhdrtp
                                 EXPORTING et_lineitems TYPE zdm_tt_aws_extract
                                           es_invoice   TYPE zdm_c_invhdrtp.
+    METHODS is_duplicate IMPORTING iv_ponum          TYPE zdm_ponum
+                                   iv_ext_invoice_id TYPE zdm_ext_invnum
+                         EXPORTING ev_ext_invoice_id TYPE zdm_ext_invnum
+                         RETURNING VALUE(rv_valid)   TYPE abap_bool.
 
     CONSTANTS:
       "travel status
@@ -271,6 +277,10 @@ CLASS lhc_Invoice IMPLEMENTATION.
         CONTINUE.
       ENDIF.
 
+      IF is_duplicate( EXPORTING iv_ext_invoice_id =  invoice_entity-ExtInvoiceID iv_ponum = invoice_entity-PONum  ).
+          CONTINUE.
+      ENDIF.
+
       DATA(storage_helper) = NEW zdm_cl_aws_invoice_storage(  invoice_entity-InvoiceID ).
 
       TRY.
@@ -400,5 +410,41 @@ CLASS lhc_Invoice IMPLEMENTATION.
 
   ENDMETHOD.
 
+
+  METHOD checkDuplicate.
+
+    READ ENTITIES OF zdm_r_invhdrtp IN LOCAL MODE
+        ENTITY Invoice
+          ALL FIELDS
+          WITH CORRESPONDING #( keys )
+        RESULT DATA(invoices).
+
+    LOOP AT invoices INTO DATA(invoice_entity).
+      DATA: lv_ext_invoice_id type zdm_ext_invnum.
+
+      IF is_duplicate( EXPORTING iv_ext_invoice_id =  invoice_entity-ExtInvoiceID iv_ponum = invoice_entity-PONum IMPORTING ev_ext_invoice_id = lv_ext_invoice_id ).
+        APPEND VALUE #( %tky = invoice_entity-%tky ) TO failed-invoice.
+        APPEND VALUE #( %tky        = invoice_entity-%tky
+                        %state_area = 'CHECK_DUPLICATE'
+                        %msg        = new_message_with_text( severity = if_abap_behv_message=>severity-error
+                                                             text     = |Duplicate detected. See Invoice: { lv_ext_invoice_id }| )
+                      ) TO reported-invoice.
+      ENDIF.
+    ENDLOOP.
+  ENDMETHOD.
+
+  METHOD is_duplicate.
+    rv_valid = abap_false.
+
+    SELECT SINGLE invoice_id INTO @ev_ext_invoice_id
+       FROM zdm_ainvhdr
+        WHERE ext_invoice_id = @iv_ext_invoice_id AND
+              po_num = @iv_ponum AND
+              status <> @invoice_status-rejected.
+
+    IF ev_ext_invoice_id IS NOT INITIAL.
+      rv_valid = abap_true.
+    ENDIF.
+  ENDMETHOD.
 
 ENDCLASS.

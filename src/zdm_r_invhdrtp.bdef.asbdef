@@ -39,6 +39,8 @@ with additional save with full data
   determination setStatusOnDraftCreate on save { create; }
   determination uploadToS3 on save { create; update; }
 
+  validation checkDuplicate on save { create; }
+
   action ( features : instance ) approveInvoice result [1] $self;
   action ( features : instance ) rejectInvoice result [1] $self;
 
