@@ -7,12 +7,11 @@ CLASS zdm_cl_aws_invoice_extract DEFINITION
 
     METHODS constructor.
 
-    METHODS get_text_from_document IMPORTING iv_bytes   TYPE xstring
-                                   EXPORTING
+    METHODS get_text_from_document IMPORTING iv_bytes          TYPE xstring
+                                   RETURNING VALUE(rv_message) TYPE char100.
+    METHODS get_lineitems RETURNING VALUE(rv_line_items) TYPE zdm_tt_aws_extract.
 
-                                             ev_message TYPE char100
-                                             ev_header  TYPE zdm_tt_keyvalue
-                                             et_items   TYPE zdm_tt_aws_extract.
+    METHODS get_field IMPORTING iv_field TYPE string iv_type TYPE string DEFAULT '' RETURNING VALUE(rv_value) TYPE string.
   PROTECTED SECTION.
   PRIVATE SECTION.
     METHODS invoke_textract
@@ -20,12 +19,14 @@ CLASS zdm_cl_aws_invoice_extract DEFINITION
       EXPORTING ev_result  TYPE REF TO /aws1/cl_texanalyzeexpensersp
                 ev_message TYPE char100.
 
-
+    METHODS convert_date IMPORTING iv_date_string TYPE string RETURNING VALUE(rv_output) TYPE dats.
     CONSTANTS: cv_pfl      TYPE /aws1/rt_profile_id VALUE 'ZINVOICE',
                cv_resource TYPE  /aws1/rt_resource_logical  VALUE 'ZINVOICE_BUCKET'.
-    DATA: filename TYPE zfile_name,
-          o_tex    TYPE REF TO /aws1/if_tex,
-          bucket   TYPE /aws1/s3_bucketname.
+    DATA: filename      TYPE zfile_name,
+          o_tex         TYPE REF TO /aws1/if_tex,
+          bucket        TYPE /aws1/s3_bucketname,
+          gt_line_items TYPE zdm_tt_aws_extract,
+          gt_header     TYPE zdm_tt_keyvalue.
 
 ENDCLASS.
 
@@ -41,13 +42,13 @@ CLASS zdm_cl_aws_invoice_extract IMPLEMENTATION.
 
   METHOD get_text_from_document.
     DATA: oo_result TYPE REF TO /aws1/cl_texanalyzeexpensersp.
-    invoke_textract(  EXPORTING iv_bytes  = iv_bytes IMPORTING ev_result = oo_result ev_message = ev_message ).
+    invoke_textract(  EXPORTING iv_bytes  = iv_bytes IMPORTING ev_result = oo_result ev_message = rv_message ).
 
     LOOP AT oo_result->get_expensedocuments( ) INTO DATA(lo_expense).
       LOOP AT lo_expense->get_summaryfields( ) INTO DATA(oo_summary_field).
         IF oo_summary_field->get_type( ) IS BOUND AND oo_summary_field->get_valuedetection(  ) IS BOUND.
           INSERT VALUE #( key = oo_summary_field->get_type( )->get_text(  ) value = oo_summary_field->get_valuedetection(  )->get_text(  ) )
-            INTO TABLE ev_header.
+            INTO TABLE gt_header.
         ENDIF.
 
 
@@ -56,7 +57,7 @@ CLASS zdm_cl_aws_invoice_extract IMPLEMENTATION.
 
     LOOP AT lo_expense->get_lineitemgroups( ) INTO DATA(lo_groups).
       LOOP AT lo_groups->get_lineitems(  ) INTO DATA(lo_lineitems).
-        DATA: ls_lineitem TYPE zsinvoice_item.
+        DATA: ls_lineitem TYPE zdm_aws_extract_lineitem.
         LOOP AT lo_lineitems->get_lineitemexpensefields(  ) INTO DATA(lo_lineitemfield).
           IF lo_lineitemfield->get_type( ) IS BOUND AND lo_lineitemfield->get_valuedetection(  ) IS BOUND.
             DATA(field) = lo_lineitemfield->get_type( )->get_text(  ).
@@ -72,7 +73,7 @@ CLASS zdm_cl_aws_invoice_extract IMPLEMENTATION.
           ENDIF.
         ENDLOOP.
 
-        INSERT ls_lineitem INTO TABLE et_items.
+        INSERT ls_lineitem INTO TABLE gt_line_items.
       ENDLOOP.
     ENDLOOP.
   ENDMETHOD.
@@ -109,6 +110,98 @@ CLASS zdm_cl_aws_invoice_extract IMPLEMENTATION.
       CATCH cx_root.
         ev_message = 'An error occured'.
     ENDTRY.
+  ENDMETHOD.
+
+  METHOD get_lineitems.
+    rv_line_items = gt_line_items.
+  ENDMETHOD.
+
+  METHOD convert_date.
+    DATA(iv_input) = iv_date_string.
+    DATA(iv_input_formated) = iv_input.
+    DATA: html TYPE string,
+          repl TYPE string.
+
+    repl = `-`.  " Match any digit
+    iv_input = replace( val   = iv_input
+                    pcre  = repl
+                    with  = `.`
+                    occ   =   0 ).
+    repl = `/`.
+    iv_input = replace( val   = iv_input
+                    pcre  = repl
+                    with  = `.`
+                    occ   =   0 ).
+
+    repl = `-`.  " Match any digit
+    iv_input_formated = replace( val   = iv_input
+                    pcre  = repl
+                    with  = `.`
+                    occ   =   0 ).
+    repl = `/`.
+    iv_input_formated = replace( val   = iv_input_formated
+                    pcre  = repl
+                    with  = `.`
+                    occ   =   0 ).
+    repl = `\d`.
+    iv_input_formated = replace( val   = iv_input_formated
+                    pcre  = repl
+                    with  = `#`
+                    occ   =   0 ).
+
+    repl = `[A-Za-z]`.   " Match any digit
+    iv_input_formated = replace( val   = iv_input_formated
+                    pcre  = repl
+                    with  = `*`
+                    occ   =   0 ).
+
+
+
+    DATA: lv_date TYPE d.
+
+    IF iv_input_formated  EQ '####.##.##'. " 2025-01-03
+      SPLIT iv_input AT '.' INTO DATA(lv_y) DATA(lv_m) DATA(lv_d).
+      rv_output = |{ lv_y }{ lv_m }{ lv_d }|.
+    ELSEIF iv_input_formated  EQ '##.##.####'. " 01-01-2025
+      SPLIT iv_input AT '.' INTO lv_d lv_m lv_y.
+      rv_output = |{ lv_y }{ lv_m }{ lv_d }|.
+    ELSEIF iv_input_formated CA ' '. " 13 Jun 2025
+      SPLIT iv_input AT ' ' INTO lv_d DATA(lv_mon) lv_y.
+      lv_mon = lv_mon+0(3).
+      " Convert month name to number
+      DATA(date_String) = to_upper( |{ lv_d } { lv_mon } { lv_y } | ).
+
+
+      CALL FUNCTION 'CONVERSION_EXIT_SDATE_INPUT'
+        EXPORTING
+          input  = date_String
+        IMPORTING
+          output = rv_output.
+
+    ELSE.
+
+    ENDIF.
+
+  ENDMETHOD.
+  METHOD get_field.
+    DATA: value TYPE string.
+
+    TRY.
+        DATA: due_date TYPE dats.
+        value = gt_header[ key = iv_field ]-value.
+
+        CASE iv_type.
+            WHEN 'DATE'.
+                value = convert_date( value ).
+            WHEN 'COST'.
+                IF value+0(1) EQ '$'.
+                  value = value+1.
+                ENDIF.
+        ENDCASE.
+
+      CATCH cx_sy_itab_line_not_found.
+    ENDTRY.
+    rv_value = value.
   ENDMETHOD.
 
 ENDCLASS.

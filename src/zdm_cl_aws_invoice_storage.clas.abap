@@ -23,10 +23,6 @@ CLASS zdm_cl_aws_invoice_storage DEFINITION
           VALUE(rv_success) TYPE abap_bool.
 
     METHODS
-      delete_object_invoice_id
-        RETURNING
-          VALUE(rv_success) TYPE abap_bool.
-    METHODS
       put_object
         IMPORTING
           iv_filename       TYPE zfile_name
@@ -70,16 +66,7 @@ CLASS zdm_cl_aws_invoice_storage IMPLEMENTATION.
       iv_key    = CONV /aws1/s3_objectkey( iv_filename )
     ).
   ENDMETHOD.
-  METHOD delete_object_invoice_id.
-    DATA(oo_objects) = o_s3->listobjectsv2( iv_prefix = |{ invoice_id }.| ).
-    LOOP AT oo_objects->get_contents(  ) INTO DATA(oo_object).
-      o_s3->deleteobject(
-      iv_bucket = bucket
-      iv_key    = CONV /aws1/s3_objectkey( oo_object->get_key(  ) )
-    ).
 
-    ENDLOOP.
-  ENDMETHOD.
   METHOD put_object.
     DATA(new_filename) = get_filename( iv_filename = iv_filename ).
     IF iv_old_filename IS NOT INITIAL AND iv_filename NE iv_old_filename.

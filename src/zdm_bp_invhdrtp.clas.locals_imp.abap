@@ -63,7 +63,7 @@ CLASS lhc_Invoice DEFINITION INHERITING FROM cl_abap_behavior_handler.
       IMPORTING keys FOR invoice~populatefieldsfromattachment.
     METHODS earlynumbering_create FOR NUMBERING
       IMPORTING entities FOR CREATE invoice.
-    METHODS convert_date IMPORTING iv_date_string TYPE string RETURNING VALUE(rv_output) TYPE dats.
+
     METHODS get_extract_results IMPORTING
                                           iv_invoice   TYPE zdm_c_invhdrtp
                                 EXPORTING et_lineitems TYPE zdm_tt_aws_extract
@@ -142,6 +142,8 @@ CLASS lhc_Invoice IMPLEMENTATION.
              UPDATE FIELDS ( Status )
                 WITH VALUE #( FOR key IN keys ( %tky         = key-%tky
                                                 Status = invoice_status-approved ) ). " 'A' Approved
+
+
 
     " read changed data for result
     READ ENTITIES OF zdm_r_invhdrtp IN LOCAL MODE
@@ -344,177 +346,28 @@ CLASS lhc_Invoice IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD get_extract_results.
-    DATA(o_extract) = NEW zcl_invoice_extract( ).
+    DATA(o_extract) = NEW zdm_cl_aws_invoice_extract( ).
     DATA: message TYPE char100.
     DATA: lt_header_fields TYPE ztt_aws_keyvalue.
     DATA: value TYPE string.
     es_invoice = iv_invoice.
-    o_extract->get_text_from_document( EXPORTING iv_bytes =  iv_invoice-TmpAttachment IMPORTING ev_header = lt_header_fields ev_message = message et_items = et_lineitems ).
+    o_extract->get_text_from_document( EXPORTING iv_bytes =  iv_invoice-TmpAttachment  ).
 
-    TRY.
-        es_invoice-VendorAddress = lt_header_fields[ key = 'VENDOR_ADDRESS' ]-value.
-      CATCH cx_sy_itab_line_not_found.
-    ENDTRY.
-
-    TRY.
-        es_invoice-VendorName = lt_header_fields[ key = 'VENDOR_NAME' ]-value.
-      CATCH cx_sy_itab_line_not_found.
-    ENDTRY.
-
-    TRY.
-        DATA: due_date TYPE dats.
-        value = lt_header_fields[ key = 'DUE_DATE' ]-value.
-
-        es_invoice-DueDate = convert_date( value ).
-      CATCH cx_sy_itab_line_not_found.
-    ENDTRY.
-
-    TRY.
-        DATA: invoice_receipt_date TYPE dats.
-
-        value = lt_header_fields[ key = 'INVOICE_RECEIPT_DATE' ]-value.
-
-        es_invoice-InvoiceReceiptDate = convert_date( value ).
-      CATCH cx_sy_itab_line_not_found.
-    ENDTRY.
-
-    TRY.
-
-        value = lt_header_fields[ key = 'TOTAL' ]-value.
-
-        IF value+0(1) EQ '$'.
-          value = value+1.
-        ENDIF.
-        es_invoice-Total = value.
-      CATCH cx_sy_itab_line_not_found.
-    ENDTRY.
-
-    TRY.
-
-        value = lt_header_fields[ key = 'AMOUNT_DUE' ]-value.
-
-        IF value+0(1) EQ '$'.
-          value = value+1.
-        ENDIF.
-        es_invoice-AmountDue = value.
-      CATCH cx_sy_itab_line_not_found.
-    ENDTRY.
-
-    TRY.
-
-        value = lt_header_fields[ key = 'TAX' ]-value.
-
-        IF value+0(1) EQ '$'.
-          value = value+1.
-        ENDIF.
-        es_invoice-Tax = value.
-      CATCH cx_sy_itab_line_not_found.
-    ENDTRY.
-
-    TRY.
-
-        value = lt_header_fields[ key = 'SUBTOTAL' ]-value.
-
-        IF value+0(1) EQ '$'.
-          value = value+1.
-        ENDIF.
-        es_invoice-Subtotal = value.
-      CATCH cx_sy_itab_line_not_found.
-    ENDTRY.
-
-    TRY.
-
-        value = lt_header_fields[ key = 'TAX_PAYER_ID' ]-value.
+    et_lineitems = o_extract->get_lineitems(  ).
+    es_invoice-VendorAddress = o_extract->get_field( 'VENDOR_ADDRESS' ).
+    es_invoice-VendorName = o_extract->get_field( 'VENDOR_NAME' ).
+    es_invoice-DueDate = o_extract->get_field( iv_field = 'DUE_DATE' iv_type = 'DATE' ).
+    es_invoice-InvoiceReceiptDate = o_extract->get_field( iv_field = 'INVOICE_RECEIPT_DATE' iv_type = 'DATE' ).
+    es_invoice-Total = o_extract->get_field( iv_field = 'TOTAL' iv_type = 'COST' ).
+    es_invoice-AmountDue = o_extract->get_field( iv_field = 'AMOUNT_DUE' iv_type = 'COST' ).
+    es_invoice-Tax = o_extract->get_field( iv_field = 'TAX' iv_type = 'COST' ).
+    es_invoice-Subtotal = o_extract->get_field( iv_field = 'SUBTOTAL' iv_type = 'COST' ).
+    es_invoice-VendorTaxNumber = o_extract->get_field( 'TAX_PAYER_ID' ).
+    es_invoice-PONum = o_extract->get_field( 'PO_NUMBER' ).
+    es_invoice-ExtInvoiceID = o_extract->get_field( 'INVOICE_RECEIPT_ID' ).
 
 
-        es_invoice-VendorTaxNumber = value.
-      CATCH cx_sy_itab_line_not_found.
-    ENDTRY.
-
-    TRY.
-
-        value = lt_header_fields[ key = 'INVOICE_RECEIPT_ID' ]-value.
-
-
-        es_invoice-ExtInvoiceID = value.
-      CATCH cx_sy_itab_line_not_found.
-    ENDTRY.
-
-    TRY.
-
-        value = lt_header_fields[ key = 'PO_NUMBER' ]-value.
-
-
-        es_invoice-PONum = value.
-      CATCH cx_sy_itab_line_not_found.
-    ENDTRY.
   ENDMETHOD.
 
-  METHOD convert_date.
-    DATA(iv_input) = iv_date_string.
-    DATA(iv_input_formated) = iv_input.
-    DATA: html TYPE string,
-          repl TYPE string.
 
-    repl = `-`.  " Match any digit
-    iv_input = replace( val   = iv_input
-                    pcre  = repl
-                    with  = `.`
-                    occ   =   0 ).
-    repl = `/`.
-    iv_input = replace( val   = iv_input
-                    pcre  = repl
-                    with  = `.`
-                    occ   =   0 ).
-
-    repl = `-`.  " Match any digit
-    iv_input_formated = replace( val   = iv_input
-                    pcre  = repl
-                    with  = `.`
-                    occ   =   0 ).
-    repl = `/`.
-    iv_input_formated = replace( val   = iv_input_formated
-                    pcre  = repl
-                    with  = `.`
-                    occ   =   0 ).
-    repl = `\d`.
-    iv_input_formated = replace( val   = iv_input_formated
-                    pcre  = repl
-                    with  = `#`
-                    occ   =   0 ).
-
-    repl = `[A-Za-z]`.   " Match any digit
-    iv_input_formated = replace( val   = iv_input_formated
-                    pcre  = repl
-                    with  = `*`
-                    occ   =   0 ).
-
-
-
-    DATA: lv_date TYPE d.
-
-    IF iv_input_formated  EQ '####.##.##'. " 2025-01-03
-      SPLIT iv_input AT '.' INTO DATA(lv_y) DATA(lv_m) DATA(lv_d).
-      rv_output = |{ lv_y }{ lv_m }{ lv_d }|.
-    ELSEIF iv_input_formated  EQ '##.##.####'. " 01-01-2025
-      SPLIT iv_input AT '.' INTO lv_d lv_m lv_y.
-      rv_output = |{ lv_y }{ lv_m }{ lv_d }|.
-    ELSEIF iv_input_formated CA ' '. " 13 Jun 2025
-      SPLIT iv_input AT ' ' INTO lv_d DATA(lv_mon) lv_y.
-      lv_mon = lv_mon+0(3).
-      " Convert month name to number
-      DATA(date_String) = to_upper( |{ lv_d } { lv_mon } { lv_y } | ).
-
-
-      CALL FUNCTION 'CONVERSION_EXIT_SDATE_INPUT'
-        EXPORTING
-          input  = date_String
-        IMPORTING
-          output = rv_output.
-
-    ELSE.
-
-    ENDIF.
-
-  ENDMETHOD.
 ENDCLASS.
